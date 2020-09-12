@@ -1,4 +1,4 @@
-# perferct-squares
+# perfect-squares
 
 An interesting problem in arithmetic with deep implications to elliptic curve theory is the problem of finding perfect squares that are sums of consecutive squares. A classic example is the Pythagorean identity:
 
