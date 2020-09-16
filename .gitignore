@@ -1,2 +1,6 @@
+.ionide/
 
-.ionide/symbolCache.db
+.fake
+
+bin
+obj

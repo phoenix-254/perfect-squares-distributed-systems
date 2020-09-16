@@ -1,3 +1,5 @@
+﻿#r "nuget: Akka.FSharp"
+
 let isValidInput n k = 
     n > 0 && k > 0 && k <= n
 
@@ -30,14 +32,13 @@ let main n k =
             let lastNum = n + k - 1
             let ans = generateSquareValuesUpto lastNum
                     |> Seq.windowed k 
-                    |> Seq.tryFind(fun window -> isSquare (Seq.sum window))
-                    
+                    |> Seq.tryFind (fun window -> isSquare (Seq.sum window))
+
             if ans.IsSome then 
                 printfn "%d" (extractStartNum ans)
             else 
                 printfn "No answer found!"
 
 match fsi.CommandLineArgs with
-    | [| _; nValue; kValue |] -> main (toInt nValue) (toInt kValue)
+    | [|_; n; k|] -> main (toInt n) (toInt k)
     | _ -> printfn "Error: Invalid Arguments. N and K values must be passed."
-    
