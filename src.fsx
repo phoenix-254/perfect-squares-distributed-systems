@@ -1,13 +1,46 @@
-let main n k = 
-    printfn "The N and K values are %d and %d respectively" n k
+let isValidInput n k = 
+    n > 0 && k > 0 && k <= n
 
 let toInt str =
     str |> int
 
-let printError = 
-    printfn "%s"
+let toFloat int = 
+    int |> float
+
+let rootOfN = 
+    toFloat >> sqrt
+
+let isSquare n =
+    let rootN = rootOfN n
+    rootN = (floor rootN)
+
+let generateSquareValuesUpto n =
+    [ for i in 1..n -> (i * i) ]
+
+let extractStartNum (resultWindow: option<int[]>) = 
+    (rootOfN resultWindow.Value.[0] |> int)
+
+let main n k = 
+    if not (isValidInput n k) then 
+        printfn "Error: Invalid Values for N and/or K."
+    else
+        if k = 1 then
+            printfn "1"
+        else 
+            let lastNum = n + k - 1
+
+            let squareValues = generateSquareValuesUpto lastNum
+
+            let squareValueWindowsOfLenK = Seq.windowed k squareValues
+            
+            let result = squareValueWindowsOfLenK |> Seq.tryFind (fun window -> isSquare (Seq.sum window))
+
+            if result.IsSome then 
+                printfn "%d" (extractStartNum result)
+            else 
+                printfn "No answer found!"
 
 match fsi.CommandLineArgs with
     | [| _; nValue; kValue |] -> main (toInt nValue) (toInt kValue)
-    | _ -> printError "Invalid Arguments"
+    | _ -> printfn "Error: Invalid Arguments. N and K values must be passed."
     
