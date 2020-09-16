@@ -28,15 +28,12 @@ let main n k =
             printfn "1"
         else 
             let lastNum = n + k - 1
-
-            let squareValues = generateSquareValuesUpto lastNum
-
-            let squareValueWindowsOfLenK = Seq.windowed k squareValues
-            
-            let result = squareValueWindowsOfLenK |> Seq.tryFind (fun window -> isSquare (Seq.sum window))
-
-            if result.IsSome then 
-                printfn "%d" (extractStartNum result)
+            let ans = generateSquareValuesUpto lastNum
+                    |> Seq.windowed k 
+                    |> Seq.tryFind(fun window -> isSquare (Seq.sum window))
+                    
+            if ans.IsSome then 
+                printfn "%d" (extractStartNum ans)
             else 
                 printfn "No answer found!"
 
