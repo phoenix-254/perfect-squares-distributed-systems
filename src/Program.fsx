@@ -35,7 +35,7 @@ let isSquare n =
 // Actor System Logic - Start
 // --------------------------
 // Create a root actor
-let system = ActorSystem.Create("system")
+let system = System.create "system" (Configuration.load())
 
 type TaskDetails = {
     StartNumber: int64;
@@ -50,7 +50,7 @@ type JobInfo = {
     WorkerCount: int64;
 }
 
-            let sender = mailbox.Sender()
+type Worker (name) =
     inherit Actor () 
     override x.OnReceive(message: obj) = 
         let sender = x.Sender
