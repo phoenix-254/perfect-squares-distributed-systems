@@ -50,45 +50,43 @@ type JobInfo = {
     WorkerCount: int64;
 }
 
-let Worker (mailbox: Actor<'a>) =
-    let rec loop() = 
-        actor {
-            let! message = mailbox.Receive()
             let sender = mailbox.Sender()
+    inherit Actor () 
+    override x.OnReceive(message: obj) = 
+        let sender = x.Sender
 
-            match box message with
-                | :? TaskDetails as input ->
-                    let first = input.StartNumber
-                    let last = input.EndNumber
-                    let windowLen = input.WindowLength
+        match message with
+            | :? TaskDetails as input ->
+                let first = input.StartNumber
+                let last = input.EndNumber
+                let windowLen = input.WindowLength
 
-                    // let mutable sumOfSquares = [ for i in first .. first + windowLen - 1L -> squareOf i ] |> Seq.sum
+                let mutable sumOfSquares = 0L
+                for number in first .. first + windowLen - 1L do
+                    sumOfSquares <- sumOfSquares + squareOf number
+        
+                if isSquare sumOfSquares then
+                    sender <! first
 
-                    let mutable sumOfSquares = 0L
-                    for i in first .. first + windowLen - 1L do
-                        sumOfSquares <- sumOfSquares + squareOf i
-            
+                for number in (first + 1L) .. last do
+                    sumOfSquares <- sumOfSquares - squareOf (number - 1L) + squareOf (number + windowLen - 1L)
+
                     if isSquare sumOfSquares then
-                        sender <! first
-
-                    for i in (first + 1L) .. last do
-                        sumOfSquares <- sumOfSquares - squareOf (i - 1L) + squareOf (i + windowLen - 1L)
-
-                        if isSquare sumOfSquares then
-                            sender <! i
-                | _ -> failwith "Failed! Computation actor failed."
-            
-            sender <! "Finished execution."
-            return! loop()
-        }
-    loop()
+                        sender <! number
+                
+                sender <! "Done"
+            | _ -> 
+                let failureMessage = name + " Failed!"
+                failwith failureMessage
 
 
 // Helper to distribute tasks among the workers
 let rec workDistributionHelper (jobInfo: JobInfo, first: int64, workers: List<IActorRef>, workerIndex: int) = 
     let last = 
-        if first + jobInfo.TaskCountPerWorker < jobInfo.TotalTaskCount then first + jobInfo.TaskCountPerWorker - 1L
-        else jobInfo.TotalTaskCount
+        if first + jobInfo.TaskCountPerWorker < jobInfo.TotalTaskCount then 
+            first + jobInfo.TaskCountPerWorker - 1L
+        else 
+            jobInfo.TotalTaskCount
     
     let taskDetails: TaskDetails = {
         StartNumber = first;
@@ -96,33 +94,32 @@ let rec workDistributionHelper (jobInfo: JobInfo, first: int64, workers: List<IA
         WindowLength = jobInfo.WindowLength;
     }
     
-    let index = if workerIndex |> int64 >= jobInfo.TaskCountPerWorker then 0 else workerIndex
+    let index = if workerIndex |> int64 >= jobInfo.WorkerCount then 0 else workerIndex
     workers |> List.item index <! taskDetails
 
     if last < jobInfo.TotalTaskCount then
         workDistributionHelper (jobInfo, last + 1L, workers, workerIndex + 1)
 
 
-let Supervisor (mailbox: Actor<'a>) = 
+type Supervisor (name) = 
+    inherit Actor()
     let mutable finishedWorkerCount = 0L
     let mutable totalWorkerCount = 0L
     let mutable parent: IActorRef = null
+    
+    override x.OnReceive(message: obj) = 
+        let sender = x.Sender
 
-    let rec loop() = 
-        actor {
-            let! message = mailbox.Receive()
-            let sender = mailbox.Sender()
-
-            match box message with
-                | :? JobInfo as input -> 
+        match message with
+            | :? JobInfo as input -> 
                     totalWorkerCount <- input.WorkerCount
                     parent <- sender
 
-                    // Create worker handles
                     let workers = 
                         [1L .. input.WorkerCount]
-                        |> List.map(fun id ->   let name = "worker_" + (id |> string)
-                                                spawn system name Worker)
+                        |> List.map(fun id ->   let properties = [| "worker_" + (id |> string) :> obj |]
+                                                system.ActorOf(Props(typedefof<Worker>, properties)))
+                    
                     workDistributionHelper (input, 1L, workers, 0)
                 | :? int64 as result -> 
                     printfn "%A" result
@@ -130,12 +127,10 @@ let Supervisor (mailbox: Actor<'a>) =
                     sender <! PoisonPill.Instance
                     finishedWorkerCount <- finishedWorkerCount + 1L
                     if finishedWorkerCount = totalWorkerCount then
-                        parent <! "Finish"
-                | _ -> failwith "Failed! Supervisor actor failed." 
-
-            return! loop()
-        }
-    loop()
+                        parent <! "Finish!"
+                | _ -> 
+                    let failureMessage = name + " Failed!"
+                    failwith failureMessage
 // ------------------------
 // Actor System Logic - End
 
@@ -147,14 +142,14 @@ let main (n: int64, k: int64) =
         printfn "Error: Invalid Values for N and/or K."
     else 
         // Configuration for total number of workers
-        let numberOfWorkers = 128L
+        let numberOfWorkers = 8L
         
         // Amount of work to be done by a single worker
         let taskCountPerWorker = 
             if n <= numberOfWorkers then 1L 
             else n / numberOfWorkers
 
-        let supervisor = spawn system "supervisor" Supervisor
+        let supervisor = system.ActorOf(Props(typedefof<Supervisor>, [| "supervisor" :> obj |]))
 
         let jobInfo: JobInfo = {
             TotalTaskCount = n;
@@ -165,7 +160,6 @@ let main (n: int64, k: int64) =
         
         let task = supervisor <? jobInfo
         let response = Async.RunSynchronously(task)
-        printfn "%A" response
         supervisor <! PoisonPill.Instance
         system.Terminate() |> ignore
 
