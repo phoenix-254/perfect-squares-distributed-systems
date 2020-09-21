@@ -3,6 +3,8 @@
 open Akka.Actor
 open Akka.FSharp
 
+open System
+
 
 // Utility Functions - Start
 // -------------------------
@@ -35,7 +37,7 @@ let isSquare n =
 // Actor System Logic - Start
 // --------------------------
 // Create a root actor
-let system = System.create "system" (Configuration.load())
+let system = create "system" (Configuration.load())
 
 type TaskDetails = {
     StartNumber: int64;
@@ -142,7 +144,7 @@ let main (n: int64, k: int64) =
         printfn "Error: Invalid Values for N and/or K."
     else 
         // Configuration for total number of workers
-        let numberOfWorkers = 8L
+        let numberOfWorkers = Environment.ProcessorCount |> int64
         
         // Amount of work to be done by a single worker
         let taskCountPerWorker = 
