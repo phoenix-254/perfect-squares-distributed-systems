@@ -1,9 +1,38 @@
 ﻿#r "nuget: Akka.FSharp"
+#r "nuget: Akka.Remote"
 
 open Akka.Actor
+open Akka.Configuration
 open Akka.FSharp
 
 open System
+
+
+// Configuration for Remote 
+let remoteWorkersIPAddresses = [|"192.168.0.167:9001"; "192.168.0.85:9001"|]
+let remoteConfig = 
+    ConfigurationFactory.ParseString(
+        @"akka {
+            log-config-on-start : on
+            stdout-loglevel : DEBUG
+            loglevel : ERROR
+            actor {
+                provider = ""Akka.Remote.RemoteActorRefProvider, Akka.Remote""
+                debug : {
+                    receive : on
+                    autoreceive : on
+                    lifecycle : on
+                    event-stream : on
+                    unhandled : on
+                }
+            }
+            remote {
+                helios.tcp {
+                    port = 9000
+                    hostname = localhost
+                }
+            }
+        }")
 
 
 // Utility Functions - Start
@@ -13,6 +42,9 @@ let isValidInput (n: uint64, k: uint64) =
 
 let strToUInt64 str =
     str |> uint64
+
+let strToBool (str: string) =
+    str.ToLower() = "true" 
 
 let dblToUInt64 dbl = 
     dbl |> uint64
@@ -36,9 +68,6 @@ let isSquare n =
 
 // Actor System Logic - Start
 // --------------------------
-// Create a root actor
-let system = ActorSystem.Create "system"
-
 type TaskDetails = {
     StartNumber: uint64;
     EndNumber: uint64;
@@ -46,10 +75,12 @@ type TaskDetails = {
 }
 
 type JobInfo = {
+    ActorSystemRef: IActorRef;
     TotalTaskCount: uint64;
     WindowLength: uint64;
     TaskCountPerWorker: uint64;
     WorkerCount: uint64;
+    ShouldRunRemotely: bool;
 }
 
 type Worker (name) =
@@ -66,13 +97,12 @@ type Worker (name) =
                 let mutable sumOfSquares = 0UL
                 for number in first .. first + windowLen - 1UL do
                     sumOfSquares <- sumOfSquares + squareOf number
-        
+
                 if isSquare sumOfSquares then
                     sender <! first
 
                 for number in (first + 1UL) .. last do
                     sumOfSquares <- sumOfSquares - squareOf (number - 1UL) + squareOf (number + windowLen - 1UL)
-
                     if isSquare sumOfSquares then
                         sender <! number
                 
@@ -103,6 +133,15 @@ let rec distributeWork (jobInfo: JobInfo, first: uint64, workers: List<IActorRef
         distributeWork (jobInfo, last + 1UL, workers, workerIndex + 1)
 
 
+let getWorkerInstance (jobInfo: JobInfo, id: uint64) = 
+    if jobInfo.ShouldRunRemotely then
+        let actorSelStr = "akka.tcp://System@" + remoteWorkersIPAddresses.[id-1UL] + "/user/worker"
+        jobInfo.ActorSystemRef.ActorSelection(actorSelStr)
+    else 
+        let properties = [| "worker_" + (id |> string) :> obj |]
+        jobInfo.ActorSystemRef.ActorOf(Props(typedefof<Worker>, properties))
+
+
 type Supervisor (name) = 
     inherit Actor()
     let mutable finishedWorkerCount = 0UL
@@ -114,38 +153,50 @@ type Supervisor (name) =
 
         match message with
             | :? JobInfo as input -> 
-                    totalWorkerCount <- input.WorkerCount
-                    parent <- sender
+                totalWorkerCount <- input.WorkerCount
+                parent <- sender
 
-                    let workers = 
-                        [1UL .. input.WorkerCount]
-                        |> List.map(fun id ->   let properties = [| "worker_" + (id |> string) :> obj |]
-                                                system.ActorOf(Props(typedefof<Worker>, properties)))
-                    
-                    distributeWork (input, 1UL, workers, 0)
-                | :? uint64 as result -> 
-                    printfn "%A" result
-                | :? string -> 
-                    sender <! PoisonPill.Instance
-                    finishedWorkerCount <- finishedWorkerCount + 1UL
-                    if finishedWorkerCount = totalWorkerCount then
-                        parent <! "Finish!"
-                | _ -> 
-                    let failureMessage = name + " Failed!"
-                    failwith failureMessage
+                let workers = 
+                    [1UL .. input.WorkerCount]
+                    |> List.map(fun id -> getWorkerInstance(jobInfo, id))
+
+                distributeWork (input, 1UL, workers, 0)
+            | :? int64 as result -> 
+                printfn "%A" result
+            | :? uint64 as result -> 
+                printfn "%A" result
+            | :? string -> 
+                sender <! PoisonPill.Instance
+                finishedWorkerCount <- finishedWorkerCount + 1UL
+                if finishedWorkerCount = totalWorkerCount then
+                    parent <! "Finish!"
+            | _ -> 
+                let failureMessage = name + " Failed!"
+                failwith failureMessage
 // ------------------------
 // Actor System Logic - End
 
 
 // Main driver function
-let main (n: uint64, k: uint64) =
+let main (n: uint64, k: uint64, shouldRunRemotely: bool) =
     // Input validation
     if not (isValidInput (n, k)) then 
         printfn "Error: Invalid Values for N and/or K."
     else 
         // Configuration for total number of workers
-        let numberOfWorkers = Environment.ProcessorCount |> uint64
+        let numberOfWorkers = 
+            if shouldRunRemotely then 
+                remoteWorkersIPAddresses.Length |> uint64
+            else 
+                Environment.ProcessorCount |> uint64
         
+        // Create a root actor
+        let system = 
+            if shouldRunRemotely then
+                ActorSystem.Create ("System", remoteConfig)
+            else 
+                ActorSystem.Create "System"
+
         // Amount of work to be done by a single worker
         let taskCountPerWorker = 
             if n <= numberOfWorkers then 1UL 
@@ -158,8 +209,9 @@ let main (n: uint64, k: uint64) =
             WindowLength = k;
             TaskCountPerWorker = taskCountPerWorker;
             WorkerCount = numberOfWorkers;
+            ShouldRunRemotely = shouldRunRemotely;
         }
-        
+
         let task = supervisor <? jobInfo
         Async.RunSynchronously(task) |> ignore
         supervisor <! PoisonPill.Instance
@@ -171,5 +223,10 @@ match fsi.CommandLineArgs with
     | [|_; n; k|] -> 
         let nVal = strToUInt64 n
         let kVal = strToUInt64 k
-        main (nVal, kVal)
+        main (nVal, kVal, false)
+    | [|_; n; k; runRemotely|] -> 
+        let nVal = strToUInt64 n
+        let kVal = strToUInt64 k
+        let shouldRunRemotely = strToBool runRemotely
+        main (nVal, kVal, shouldRunRemotely)
     | _ -> printfn "Error: Invalid Arguments. N and K values must be passed."
