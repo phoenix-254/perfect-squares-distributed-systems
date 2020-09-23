@@ -9,8 +9,7 @@ open System
 
 
 // Configuration for Remote 
-let remoteWorkersIPAddresses = [|"192.168.0.167:9001"; "192.168.0.85:9001"|]
-let remoteConfig = 
+let configuration = 
     ConfigurationFactory.ParseString(
         @"akka {
             log-config-on-start : on
@@ -68,6 +67,9 @@ let isSquare n =
 
 // Actor System Logic - Start
 // --------------------------
+// Create a root actor
+let system = ActorSystem.Create ("System", configuration)
+
 type TaskDetails = {
     StartNumber: uint64;
     EndNumber: uint64;
@@ -75,7 +77,6 @@ type TaskDetails = {
 }
 
 type JobInfo = {
-    ActorSystemRef: IActorRef;
     TotalTaskCount: uint64;
     WindowLength: uint64;
     TaskCountPerWorker: uint64;
@@ -112,6 +113,24 @@ type Worker (name) =
                 failwith failureMessage
 
 
+let distributeWorkRemotely (jobInfo: JobInfo) = 
+    let worker1 = system.ActorSelection("akka.tcp://System@192.168.0.167:9001/user/worker")
+    let taskDetails1: TaskDetails = {
+        StartNumber = 1UL;
+        EndNumber = jobInfo.TotalTaskCount / 2UL;
+        WindowLength = jobInfo.WindowLength;
+    }
+    worker1 <! taskDetails1
+
+    let worker2 = system.ActorSelection("akka.tcp://System@192.168.0.85:9001/user/worker")
+    let taskDetails2: TaskDetails = {
+        StartNumber = (jobInfo.TotalTaskCount / 2UL) + 1UL;
+        EndNumber = jobInfo.TotalTaskCount;
+        WindowLength = jobInfo.WindowLength;
+    }
+    worker2 <! taskDetails2
+
+
 // Helper to distribute tasks among the workers
 let rec distributeWork (jobInfo: JobInfo, first: uint64, workers: List<IActorRef>, workerIndex: int) = 
     let last = 
@@ -133,15 +152,6 @@ let rec distributeWork (jobInfo: JobInfo, first: uint64, workers: List<IActorRef
         distributeWork (jobInfo, last + 1UL, workers, workerIndex + 1)
 
 
-let getWorkerInstance (jobInfo: JobInfo, id: uint64) = 
-    if jobInfo.ShouldRunRemotely then
-        let actorSelStr = "akka.tcp://System@" + remoteWorkersIPAddresses.[id-1UL] + "/user/worker"
-        jobInfo.ActorSystemRef.ActorSelection(actorSelStr)
-    else 
-        let properties = [| "worker_" + (id |> string) :> obj |]
-        jobInfo.ActorSystemRef.ActorOf(Props(typedefof<Worker>, properties))
-
-
 type Supervisor (name) = 
     inherit Actor()
     let mutable finishedWorkerCount = 0UL
@@ -156,11 +166,15 @@ type Supervisor (name) =
                 totalWorkerCount <- input.WorkerCount
                 parent <- sender
 
-                let workers = 
-                    [1UL .. input.WorkerCount]
-                    |> List.map(fun id -> getWorkerInstance(jobInfo, id))
+                if input.ShouldRunRemotely then
+                    distributeWorkRemotely input
+                else
+                    let workers = 
+                        [1UL .. input.WorkerCount]
+                        |> List.map(fun id ->   let properties = [| "worker_" + (id |> string) :> obj |]
+                                                system.ActorOf(Props(typedefof<Worker>, properties)))
 
-                distributeWork (input, 1UL, workers, 0)
+                    distributeWork (input, 1UL, workers, 0)
             | :? int64 as result -> 
                 printfn "%A" result
             | :? uint64 as result -> 
@@ -184,19 +198,8 @@ let main (n: uint64, k: uint64, shouldRunRemotely: bool) =
         printfn "Error: Invalid Values for N and/or K."
     else 
         // Configuration for total number of workers
-        let numberOfWorkers = 
-            if shouldRunRemotely then 
-                remoteWorkersIPAddresses.Length |> uint64
-            else 
-                Environment.ProcessorCount |> uint64
+        let numberOfWorkers = if shouldRunRemotely then 2UL else Environment.ProcessorCount |> uint64
         
-        // Create a root actor
-        let system = 
-            if shouldRunRemotely then
-                ActorSystem.Create ("System", remoteConfig)
-            else 
-                ActorSystem.Create "System"
-
         // Amount of work to be done by a single worker
         let taskCountPerWorker = 
             if n <= numberOfWorkers then 1UL 
